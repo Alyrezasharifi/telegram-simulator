@@ -1,0 +1,341 @@
+const state = {
+  token: localStorage.getItem('telegram-token') || '',
+  user: null,
+  channels: [],
+  activeChannelId: null,
+};
+
+const elements = {
+  authPanel: document.getElementById('authPanel'),
+  channelList: document.getElementById('channelList'),
+  loginForm: document.getElementById('loginForm'),
+  registerForm: document.getElementById('registerForm'),
+  authTabs: document.querySelectorAll('.auth-tab'),
+  newChannelBtn: document.getElementById('newChannelBtn'),
+  chatPanel: document.getElementById('chatPanel'),
+  chatTitle: document.getElementById('chatTitle'),
+  chatStatus: document.getElementById('chatStatus'),
+  messages: document.getElementById('messages'),
+  composer: document.getElementById('composer'),
+  composerInput: document.getElementById('composerInput'),
+  fileInput: document.getElementById('messageFile'),
+  logoutBtn: document.getElementById('logoutBtn'),
+};
+
+function setActiveAuthTab(tabName) {
+  elements.authTabs.forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.auth === tabName);
+  });
+
+  const loginVisible = tabName === 'login';
+  elements.loginForm.classList.toggle('hidden', !loginVisible);
+  elements.registerForm.classList.toggle('hidden', loginVisible);
+}
+
+async function apiFetch(path, options = {}) {
+  const method = options.method || 'GET';
+  const body = options.body || null;
+  const sendJson = options.json !== false && !(body instanceof FormData);
+
+  const headers = new Headers(options.headers || {});
+  if (state.token) {
+    headers.set('Authorization', `Bearer ${state.token}`);
+  }
+
+  if (sendJson && body && typeof body !== 'string') {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  const response = await fetch(path, {
+    method,
+    headers,
+    body,
+  });
+
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+
+  if (!response.ok) {
+    throw new Error(payload.detail || 'Request failed');
+  }
+
+  return payload;
+}
+
+function getAvatarUrl(user) {
+  if (user?.avatar_url) return user.avatar_url;
+  const seed = user?.username || 'user';
+  return `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(seed)}`;
+}
+
+function renderChannelList() {
+  elements.channelList.innerHTML = '';
+
+  state.channels.forEach((channel) => {
+    const button = document.createElement('button');
+    button.className = `channel-item${channel.id === state.activeChannelId ? ' active' : ''}`;
+    button.type = 'button';
+    button.innerHTML = `
+      <div class="channel-badge">${channel.name.slice(0, 2).toUpperCase()}</div>
+      <div class="channel-meta">
+        <div class="channel-name">${channel.name}</div>
+        <div class="channel-desc">${channel.description || 'No description'}</div>
+      </div>
+    `;
+
+    button.addEventListener('click', () => {
+      state.activeChannelId = channel.id;
+      renderChannelList();
+      loadMessages(channel.id);
+    });
+
+    elements.channelList.appendChild(button);
+  });
+}
+
+function renderMessages(messages) {
+  if (!messages.length) {
+    elements.messages.innerHTML = `<div class="message-row"><div class="message-bubble"><div class="message-text">This channel is empty. Start the conversation.</div></div></div>`;
+    return;
+  }
+
+  elements.messages.innerHTML = messages
+    .map((message) => {
+      const sender = message.user || {};
+      const avatar = getAvatarUrl(sender);
+      const text = message.text ? `<div class="message-text">${escapeHtml(message.text)}</div>` : '';
+
+      let mediaMarkup = '';
+      if (message.media_type === 'image' && message.media_url) {
+        mediaMarkup = `<div class="message-media"><img src="${message.media_url}" alt="Attachment" /></div>`;
+      } else if (message.media_type === 'video' && message.media_url) {
+        mediaMarkup = `<div class="message-media"><video controls src="${message.media_url}"></video></div>`;
+      } else if (message.media_type === 'audio' && message.media_url) {
+        mediaMarkup = `<div class="message-media"><audio controls src="${message.media_url}"></audio></div>`;
+      } else if (message.media_type === 'file' && message.media_url) {
+        mediaMarkup = `<div class="message-media"><a class="secondary-button" href="${message.media_url}" target="_blank" rel="noreferrer">Open file</a></div>`;
+      }
+
+      return `
+        <div class="message-row">
+          <img class="user-avatar" src="${avatar}" alt="${escapeHtml(sender.display_name || sender.username || 'User')}" />
+          <div class="message-bubble">
+            <div class="message-author">${escapeHtml(sender.display_name || sender.username || 'User')}</div>
+            ${text}
+            ${mediaMarkup}
+            <div class="message-time">${formatTime(message.created_at)}</div>
+          </div>
+        </div>
+      `;
+    })
+    .join('');
+
+  elements.messages.scrollTop = elements.messages.scrollHeight;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatTime(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadChannels() {
+  const channels = await apiFetch('/api/channels');
+  state.channels = channels;
+
+  if (!state.activeChannelId && channels.length) {
+    state.activeChannelId = channels[0].id;
+  }
+
+  renderChannelList();
+
+  const activeChannel = channels.find((channel) => channel.id === state.activeChannelId);
+  if (activeChannel) {
+    elements.chatTitle.textContent = activeChannel.name;
+    elements.chatStatus.textContent = `${activeChannel.description || 'Channel'} • ${channels.length} total`;
+    loadMessages(activeChannel.id);
+  }
+}
+
+async function loadMessages(channelId) {
+  const messages = await apiFetch(`/api/channels/${channelId}/messages`);
+  const activeChannel = state.channels.find((channel) => channel.id === channelId);
+  if (activeChannel) {
+    elements.chatTitle.textContent = activeChannel.name;
+    elements.chatStatus.textContent = `${activeChannel.description || 'Channel'} • ${messages.length} message(s)`;
+  }
+  renderMessages(messages);
+}
+
+async function createChannel(name) {
+  const description = 'Private channel';
+  const response = await apiFetch('/api/channels', {
+    method: 'POST',
+    body: JSON.stringify({ name, description }),
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  state.channels.push(response);
+  state.activeChannelId = response.id;
+  renderChannelList();
+  loadMessages(response.id);
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const username = formData.get('username').toString();
+  const password = formData.get('password').toString();
+
+  try {
+    const result = await apiFetch('/api/login', {
+      method: 'POST',
+      body: new URLSearchParams({ username, password }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      json: false,
+    });
+
+    state.token = result.token;
+    state.user = result.user;
+    localStorage.setItem('telegram-token', result.token);
+
+    elements.authPanel.classList.add('hidden');
+    elements.channelList.classList.remove('hidden');
+    elements.chatPanel.classList.remove('hidden');
+    elements.logoutBtn.classList.remove('hidden');
+    await loadChannels();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function handleRegister(event) {
+  event.preventDefault();
+  const formData = new FormData(event.currentTarget);
+  const username = formData.get('username').toString();
+  const displayName = formData.get('display_name').toString();
+  const password = formData.get('password').toString();
+  const avatarFile = formData.get('avatar');
+
+  const request = new FormData();
+  request.append('username', username);
+  request.append('display_name', displayName);
+  request.append('password', password);
+  if (avatarFile && avatarFile.name) {
+    request.append('avatar', avatarFile);
+  }
+
+  try {
+    const result = await apiFetch('/api/register', {
+      method: 'POST',
+      body: request,
+      json: false,
+    });
+
+    state.token = result.token;
+    state.user = result.user;
+    localStorage.setItem('telegram-token', result.token);
+    elements.authPanel.classList.add('hidden');
+    elements.channelList.classList.remove('hidden');
+    elements.chatPanel.classList.remove('hidden');
+    elements.logoutBtn.classList.remove('hidden');
+    await loadChannels();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function handleSendMessage(event) {
+  event.preventDefault();
+  if (!state.activeChannelId) return;
+
+  const formData = new FormData();
+  const text = elements.composerInput.value.trim();
+  if (text) formData.append('text', text);
+
+  const file = elements.fileInput.files[0];
+  if (file) {
+    formData.append('file', file);
+  }
+
+  if (!text && !file) return;
+
+  try {
+    const result = await apiFetch(`/api/channels/${state.activeChannelId}/messages`, {
+      method: 'POST',
+      body: formData,
+      json: false,
+    });
+
+    elements.composerInput.value = '';
+    elements.fileInput.value = '';
+    await loadMessages(state.activeChannelId);
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+function handleLogout() {
+  localStorage.removeItem('telegram-token');
+  state.token = '';
+  state.user = null;
+  state.channels = [];
+  state.activeChannelId = null;
+
+  elements.authPanel.classList.remove('hidden');
+  elements.channelList.classList.add('hidden');
+  elements.chatPanel.classList.add('hidden');
+  elements.logoutBtn.classList.add('hidden');
+  elements.messages.innerHTML = '';
+  elements.chatTitle.textContent = 'Select a channel';
+  elements.chatStatus.textContent = 'Please log in to continue';
+  elements.loginForm.reset();
+  elements.registerForm.reset();
+}
+
+async function initialize() {
+  elements.authTabs.forEach((tab) => {
+    tab.addEventListener('click', () => setActiveAuthTab(tab.dataset.auth));
+  });
+
+  elements.loginForm.addEventListener('submit', handleLogin);
+  elements.registerForm.addEventListener('submit', handleRegister);
+  elements.newChannelBtn.addEventListener('click', async () => {
+    const channelName = window.prompt('Channel name');
+    if (!channelName || !channelName.trim()) return;
+    await createChannel(channelName.trim());
+  });
+  elements.composer.addEventListener('submit', handleSendMessage);
+  elements.logoutBtn.addEventListener('click', handleLogout);
+
+  setActiveAuthTab('login');
+
+  if (state.token) {
+    try {
+      const me = await apiFetch('/api/me');
+      state.user = me.user;
+      elements.authPanel.classList.add('hidden');
+      elements.channelList.classList.remove('hidden');
+      elements.chatPanel.classList.remove('hidden');
+      elements.logoutBtn.classList.remove('hidden');
+      await loadChannels();
+    } catch {
+      handleLogout();
+    }
+  } else {
+    elements.channelList.classList.add('hidden');
+    elements.chatPanel.classList.add('hidden');
+    elements.logoutBtn.classList.add('hidden');
+  }
+}
+
+initialize();

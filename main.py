@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
@@ -47,7 +48,7 @@ def utc_now_iso() -> str:
 
 
 def create_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=10.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -182,14 +183,22 @@ def serialize_message(row: sqlite3.Row) -> dict:
     }
 
 
-async def save_upload(file: UploadFile, target_dir: Path) -> str:
+async def save_upload(file: UploadFile, target_dir: Path) -> Optional[str]:
+    if not file or not file.filename:
+        return None
+
     filename = file.filename or f"upload-{uuid.uuid4().hex}"
     extension = Path(filename).suffix.lower() or ".bin"
     saved_name = f"{uuid.uuid4().hex}{extension}"
     saved_path = target_dir / saved_name
-    data = await file.read()
-    saved_path.write_bytes(data)
-    return f"/uploads/{target_dir.name}/{saved_name}"
+
+    try:
+        data = await file.read()
+        saved_path.write_bytes(data)
+        return f"/uploads/{target_dir.name}/{saved_name}"
+    except Exception as e:
+        print(f"Error saving file: {e}")
+        return None
 
 
 def get_current_user(
@@ -226,31 +235,41 @@ async def register_user(
     avatar: Optional[UploadFile] = File(default=None),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    username = username.strip()
-    display_name = display_name.strip()
-    if not username or not display_name or not password:
-        raise HTTPException(status_code=400, detail="Username, display name, and password are required")
+    try:
+        username = (username or "").strip()
+        display_name = (display_name or "").strip()
+        password = (password or "").strip()
 
-    existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Username already taken")
+        if not username or not display_name or not password:
+            raise HTTPException(status_code=400, detail="Username, display name, and password are required")
 
-    avatar_url = None
-    if avatar and avatar.filename:
-        avatar_url = await save_upload(avatar, AVATAR_DIR)
+        existing = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Username already taken")
 
-    password_hash = hash_password(password)
-    created_at = utc_now_iso()
-    cursor = db.execute(
-        "INSERT INTO users (username, display_name, password_hash, avatar_url, created_at) VALUES (?, ?, ?, ?, ?)",
-        (username, display_name, password_hash, avatar_url, created_at),
-    )
-    db.commit()
+        avatar_url = None
+        if avatar and avatar.filename:
+            avatar_url = await save_upload(avatar, AVATAR_DIR)
 
-    user_id = cursor.lastrowid
-    token = create_token(user_id)
-    row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return {"token": token, "user": serialize_user(row)}
+        password_hash = hash_password(password)
+        created_at = utc_now_iso()
+
+        cursor = db.execute(
+            "INSERT INTO users (username, display_name, password_hash, avatar_url, created_at) VALUES (?, ?, ?, ?, ?)",
+            (username, display_name, password_hash, avatar_url, created_at),
+        )
+        db.commit()
+
+        user_id = cursor.lastrowid
+        token = create_token(user_id)
+        row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+        return {"token": token, "user": serialize_user(row)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Register error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.post("/api/login")
@@ -259,16 +278,24 @@ def login_user(
     password: str = Form(...),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    username = username.strip()
-    row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-    if row is None:
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+    try:
+        username = (username or "").strip()
+        password = (password or "").strip()
 
-    if not verify_password(password, row["password_hash"]):
-        raise HTTPException(status_code=401, detail="Invalid username or password")
+        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    token = create_token(row["id"])
-    return {"token": token, "user": serialize_user(row)}
+        if not verify_password(password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+
+        token = create_token(row["id"])
+        return {"token": token, "user": serialize_user(row)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.get("/api/me")
@@ -278,8 +305,12 @@ def get_me(current_user: dict = Depends(get_current_user)) -> dict:
 
 @app.get("/api/channels")
 def list_channels(db: sqlite3.Connection = Depends(get_db)) -> list[dict]:
-    rows = db.execute("SELECT * FROM channels ORDER BY created_at ASC").fetchall()
-    return [serialize_channel(row) for row in rows]
+    try:
+        rows = db.execute("SELECT * FROM channels ORDER BY created_at ASC").fetchall()
+        return [serialize_channel(row) for row in rows]
+    except Exception as e:
+        print(f"List channels error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.post("/api/channels")
@@ -289,19 +320,27 @@ def create_channel(
     current_user: dict = Depends(get_current_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    name = name.strip()
-    description = description.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Channel name is required")
+    try:
+        name = (name or "").strip()
+        description = (description or "").strip()
 
-    cursor = db.execute(
-        "INSERT INTO channels (name, description, created_by, created_at) VALUES (?, ?, ?, ?)",
-        (name, description, current_user["id"], utc_now_iso()),
-    )
-    db.commit()
-    channel_id = cursor.lastrowid
-    row = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
-    return serialize_channel(row)
+        if not name:
+            raise HTTPException(status_code=400, detail="Channel name is required")
+
+        cursor = db.execute(
+            "INSERT INTO channels (name, description, created_by, created_at) VALUES (?, ?, ?, ?)",
+            (name, description, current_user["id"], utc_now_iso()),
+        )
+        db.commit()
+
+        channel_id = cursor.lastrowid
+        row = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
+        return serialize_channel(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Create channel error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.get("/api/channels/{channel_id}/messages")
@@ -310,18 +349,21 @@ def list_messages(
     db: sqlite3.Connection = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ) -> list[dict]:
-    _ = current_user
-    rows = db.execute(
-        """
-        SELECT m.*, u.username, u.display_name, u.avatar_url
-        FROM messages m
-        LEFT JOIN users u ON u.id = m.user_id
-        WHERE m.channel_id = ?
-        ORDER BY m.created_at ASC
-        """,
-        (channel_id,),
-    ).fetchall()
-    return [serialize_message(row) for row in rows]
+    try:
+        rows = db.execute(
+            """
+            SELECT m.*, u.username, u.display_name, u.avatar_url
+            FROM messages m
+            LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.channel_id = ?
+            ORDER BY m.created_at ASC
+            """,
+            (channel_id,),
+        ).fetchall()
+        return [serialize_message(row) for row in rows]
+    except Exception as e:
+        print(f"List messages error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.post("/api/channels/{channel_id}/messages")
@@ -332,42 +374,52 @@ async def send_message(
     current_user: dict = Depends(get_current_user),
     db: sqlite3.Connection = Depends(get_db),
 ) -> dict:
-    text = (text or "").strip()
-    if not text and not file:
-        raise HTTPException(status_code=400, detail="Message is empty")
+    try:
+        text = (text or "").strip()
 
-    channel = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
-    if channel is None:
-        raise HTTPException(status_code=404, detail="Channel not found")
+        if not text and not file:
+            raise HTTPException(status_code=400, detail="Message is empty")
 
-    media_url = None
-    media_type = None
-    if file and file.filename:
-        media_url = await save_upload(file, MESSAGE_DIR)
-        content_type = (file.content_type or "").lower()
-        if content_type.startswith("image/"):
-            media_type = "image"
-        elif content_type.startswith("video/"):
-            media_type = "video"
-        elif content_type.startswith("audio/"):
-            media_type = "audio"
-        else:
-            media_type = "file"
+        channel = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
+        if channel is None:
+            raise HTTPException(status_code=404, detail="Channel not found")
 
-    created_at = utc_now_iso()
-    cursor = db.execute(
-        "INSERT INTO messages (channel_id, user_id, text, media_type, media_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (channel_id, current_user["id"], text, media_type, media_url, created_at),
-    )
-    db.commit()
+        media_url = None
+        media_type = None
 
-    row = db.execute(
-        """
-        SELECT m.*, u.username, u.display_name, u.avatar_url
-        FROM messages m
-        LEFT JOIN users u ON u.id = m.user_id
-        WHERE m.id = ?
-        """,
-        (cursor.lastrowid,),
-    ).fetchone()
-    return serialize_message(row)
+        if file and file.filename:
+            media_url = await save_upload(file, MESSAGE_DIR)
+            content_type = (file.content_type or "").lower()
+
+            if content_type.startswith("image/"):
+                media_type = "image"
+            elif content_type.startswith("video/"):
+                media_type = "video"
+            elif content_type.startswith("audio/"):
+                media_type = "audio"
+            else:
+                media_type = "file"
+
+        created_at = utc_now_iso()
+        cursor = db.execute(
+            "INSERT INTO messages (channel_id, user_id, text, media_type, media_url, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (channel_id, current_user["id"], text, media_type, media_url, created_at),
+        )
+        db.commit()
+
+        row = db.execute(
+            """
+            SELECT m.*, u.username, u.display_name, u.avatar_url
+            FROM messages m
+            LEFT JOIN users u ON u.id = m.user_id
+            WHERE m.id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+        return serialize_message(row)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Send message error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

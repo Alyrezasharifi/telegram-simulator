@@ -1,79 +1,75 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Telegram Simulator</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="app-shell">
+    <!-- SIDEBAR -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="brand">Telegram</div>
         <button id="newChannelBtn" class="new-channel-btn" type="button">+</button>
       </div>
 
+      <!-- AUTH PANEL -->
       <div id="authPanel" class="auth-panel">
         <div class="auth-toggle">
-          <button class="auth-tab active" type="button" data-auth="login">Login</button>
-          <button class="auth-tab" type="button" data-auth="register">Register</button>
+          <button class="auth-tab active" type="button" data-tab="login">Login</button>
+          <button class="auth-tab" type="button" data-tab="register">Register</button>
         </div>
 
         <form id="loginForm" class="auth-form">
           <div class="field">
-            <label for="loginUsername">Username</label>
-            <input id="loginUsername" name="username" type="text" placeholder="your username" required />
+            <label>Username</label>
+            <input name="username" type="text" placeholder="your username" required>
           </div>
-
           <div class="field">
-            <label for="loginPassword">Password</label>
-            <input id="loginPassword" name="password" type="password" placeholder="••••••••" required />
+            <label>Password</label>
+            <input name="password" type="password" placeholder="••••••••" required>
           </div>
-
           <button type="submit" class="primary-button">Login</button>
         </form>
 
         <form id="registerForm" class="auth-form hidden">
           <div class="field">
-            <label for="registerUsername">Username</label>
-            <input id="registerUsername" name="username" type="text" placeholder="choose username" required />
+            <label>Username</label>
+            <input name="username" type="text" placeholder="choose username" required>
           </div>
-
           <div class="field">
-            <label for="registerDisplayName">Display Name</label>
-            <input id="registerDisplayName" name="display_name" type="text" placeholder="Your display name" required />
+            <label>Display Name</label>
+            <input name="display_name" type="text" placeholder="Your name" required>
           </div>
-
           <div class="field">
-            <label for="registerPassword">Password</label>
-            <input id="registerPassword" name="password" type="password" placeholder="strong password" required />
+            <label>Password</label>
+            <input name="password" type="password" placeholder="strong password" required>
           </div>
-
           <div class="field">
-            <label for="avatarUpload">Profile Picture</label>
-            <input id="avatarUpload" name="avatar" type="file" accept="image/*" />
+            <label>Profile Picture</label>
+            <input name="avatar" type="file" accept="image/*">
           </div>
-
           <button type="submit" class="primary-button">Register</button>
         </form>
       </div>
 
+      <!-- CHANNEL LIST -->
       <div id="channelList" class="channel-list hidden"></div>
     </aside>
 
+    <!-- CHAT PANEL -->
     <main id="chatPanel" class="chat-panel hidden">
       <div class="chat-header">
         <div id="chatTitle" class="chat-title">Select a channel</div>
         <div id="chatStatus" class="chat-status">Please log in to continue</div>
       </div>
-
       <div id="messages" class="messages"></div>
-
       <form id="composer" class="composer">
-        <input id="composerInput" class="composer-input" type="text" placeholder="Write a message..." />
+        <input id="composerInput" class="composer-input" type="text" placeholder="Write a message...">
         <label class="file-picker">
-          <input id="messageFile" type="file" hidden />
+          <input id="messageFile" type="file" hidden>
           Attach
         </label>
         <button class="send-button" type="submit">Send</button>

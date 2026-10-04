@@ -10,7 +10,7 @@ from typing import Iterator, Optional
 import jwt
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from passlib.context import CryptContext
 
@@ -39,6 +39,7 @@ app.add_middleware(
 )
 
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 def utc_now_iso() -> str:
@@ -120,16 +121,6 @@ def startup() -> None:
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(BASE_DIR / "static" / "index.html", media_type="text/html")
-
-
-@app.get("/static/styles.css")
-async def styles() -> FileResponse:
-    return FileResponse(BASE_DIR / "static" / "styles.css", media_type="text/css")
-
-
-@app.get("/static/app.js")
-async def app_js() -> FileResponse:
-    return FileResponse(BASE_DIR / "static" / "app.js", media_type="application/javascript")
 
 
 @app.get("/api/health")
@@ -308,8 +299,8 @@ def create_channel(
         (name, description, current_user["id"], utc_now_iso()),
     )
     db.commit()
-
-    row = db.execute("SELECT * FROM channels WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    channel_id = cursor.lastrowid
+    row = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
     return serialize_channel(row)
 
 
